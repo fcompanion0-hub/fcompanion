@@ -17,7 +17,12 @@ from functools import wraps
 from google.cloud import dialogflow_v2 as dialogflow
 
 app = Flask(__name__)
-CORS(app, origins=["http://127.0.0.1:5501", "http://localhost:5501"], supports_credentials=True)
+
+CORS(app, origins=[
+    "http://127.0.0.1:5501",
+    "http://localhost:5501",
+    "https://fcompanion.netlify.app"
+], supports_credentials=True)
 
 @app.before_request
 def handle_options():
