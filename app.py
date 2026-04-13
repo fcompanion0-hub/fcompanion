@@ -28,28 +28,24 @@ def handle_options():
         res.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
         return res, 200
 
-SECRET_KEY = "fcompanion_secret_key"
+SECRET_KEY = os.environ.get("SECRET_KEY")
 
 import json
+import os
 from google.oauth2 import service_account
 from google.cloud import dialogflow_v2 as dialogflow
 
 PROJECT_ID = "nubot-lnsc"
 
-if os.path.exists("credentials.json"):
-    # Local development
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "credentials.json"
-    session_client = dialogflow.SessionsClient()
+credentials_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+credentials = service_account.Credentials.from_service_account_info(credentials_info)
 
-else:
-    credentials_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-    credentials = service_account.Credentials.from_service_account_info(credentials_info)
-    session_client = dialogflow.SessionsClient(credentials=credentials)
+session_client = dialogflow.SessionsClient(credentials=credentials)
 
-SMTP_EMAIL    = "fcompanion0@gmail.com"
-SMTP_PASSWORD = "oxuvzbcczmcvpzig"
+SMTP_EMAIL = os.environ.get("SMTP_EMAIL")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
 
-MONGO_URI = "mongodb+srv://jaegerdesu10_db_user:kXgQ6gLFL7xBXiUm@fcompanion.gnkmbio.mongodb.net/nile_university"
+MONGO_URI = os.environ.get("MONGO_URI")
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client["nile_university"]
 

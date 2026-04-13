@@ -1,0 +1,9 @@
+flask
+flask-cors
+pymongo
+werkzeug
+pyjwt
+certifi
+google-cloud-dialogflow
+google-auth
+gunicorn
