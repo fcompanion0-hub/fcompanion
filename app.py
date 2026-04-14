@@ -5,15 +5,14 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import jwt
 import random
-import smtplib
 import certifi
 import uuid
 import os
+import json
+import resend
 
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from functools import wraps
-
+from google.oauth2 import service_account
 from google.cloud import dialogflow_v2 as dialogflow
 
 app = Flask(__name__)
@@ -33,51 +32,68 @@ def handle_options():
         res.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
         return res, 200
 
+
+# =========================
+# 🔑 CONFIG
+# =========================
 SECRET_KEY = os.environ.get("SECRET_KEY")
 
-import json
-import os
-from google.oauth2 import service_account
-from google.cloud import dialogflow_v2 as dialogflow
+# ── Resend Email ──────────────────────────────────────
+# ── Resend Email ──────────────────────────────────────
+resend.api_key = os.environ.get("RESEND_API_KEY")
+RESEND_FROM = os.environ.get("RESEND_FROM")
 
-PROJECT_ID = "nubot-lnsc"
-
+# ── Dialogflow ────────────────────────────────────────
+PROJECT_ID       = "nubot-lnsc"
 credentials_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-credentials = service_account.Credentials.from_service_account_info(credentials_info)
+credentials      = service_account.Credentials.from_service_account_info(credentials_info)
+session_client   = dialogflow.SessionsClient(credentials=credentials)
 
-session_client = dialogflow.SessionsClient(credentials=credentials)
-
-SMTP_EMAIL = os.environ.get("SMTP_EMAIL")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
-
+# ── MongoDB ───────────────────────────────────────────
 MONGO_URI = os.environ.get("MONGO_URI")
-client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-db = client["nile_university"]
+client    = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+db        = client["nile_university"]
 
 hods_collection      = db["hods"]
 timetable_collection = db["timetables"]
 users_collection     = db["users"]
 otp_collection       = db["otps"]
-chats_collection     = db["chats"] 
+chats_collection     = db["chats"]
 
 
+# =========================
+# 📧 EMAIL HELPER (Resend)
+# =========================
 def send_otp_email(to_email, otp, purpose="verification"):
     subject = "FCOMPANION - Email Verification Code" if purpose == "verification" \
               else "FCOMPANION - Password Reset Code"
-    body = f"<h3>Your code is:</h3><h1>{otp}</h1><p>Expires in 10 minutes.</p>"
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = SMTP_EMAIL
-    msg["To"]      = to_email
-    msg.attach(MIMEText(body, "html"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(SMTP_EMAIL, SMTP_PASSWORD)
-        server.sendmail(SMTP_EMAIL, to_email, msg.as_string())
+
+    body = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: auto;">
+        <h2 style="color: #4f46e5;">FCOMPANION</h2>
+        <p>Your {'verification' if purpose == 'verification' else 'password reset'} code is:</p>
+        <div style="font-size: 36px; font-weight: bold; letter-spacing: 8px;
+                    color: #4f46e5; margin: 24px 0;">{otp}</div>
+        <p>This code expires in <strong>10 minutes</strong>.</p>
+        <p style="color: #888; font-size: 13px;">If you did not request this, ignore this email.</p>
+    </div>
+    """
+
+    resend.Emails.send({
+        "from":    RESEND_FROM,
+        "to":      [to_email],
+        "subject": subject,
+        "html":    body
+    })
+
 
 def generate_otp():
     return str(random.randint(100000, 999999))
 
 
+# =========================
+# 🔐 JWT HELPER
+# =========================
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -86,7 +102,7 @@ def token_required(f):
             return jsonify({"error": "Token missing"}), 401
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-            user = users_collection.find_one({"email": payload["email"]})
+            user    = users_collection.find_one({"email": payload["email"]})
             if not user:
                 return jsonify({"error": "User not found"}), 404
         except Exception:
@@ -95,6 +111,9 @@ def token_required(f):
     return decorated
 
 
+# =========================
+# 🔐 AUTH ROUTES
+# =========================
 @app.route("/signup", methods=["POST"])
 def signup():
     data  = request.get_json()
@@ -111,75 +130,17 @@ def signup():
         "purpose":    "verification",
         "expires_at": datetime.utcnow() + timedelta(minutes=10),
         "userData": {
-            "firstName": data.get("firstName"),
-            "lastName":  data.get("lastName"),
-            "email":     email,
-            "level":     data.get("level"),
-            "department":data.get("department"),
-            "password":  generate_password_hash(data.get("password"))
+            "firstName":  data.get("firstName"),
+            "lastName":   data.get("lastName"),
+            "email":      email,
+            "level":      data.get("level"),
+            "department": data.get("department"),
+            "password":   generate_password_hash(data.get("password"))
         }
     })
-    send_otp_email(email, otp)
+    send_otp_email(email, otp, purpose="verification")
     return jsonify({"message": "OTP sent", "email": email})
 
-
-
-@app.route("/forgot-password", methods=["POST"])
-def forgot_password():
-    data = request.get_json()
-    email = data.get("email")
-    user = users_collection.find_one({"email": email})
-    if not user:
-        return jsonify({"message": "User not found"}), 404
-
-    otp_collection.delete_many({"email": email, "purpose": "reset"})
-    otp = generate_otp()
-    otp_collection.insert_one({
-        "email": email,
-        "otp": otp,
-        "purpose": "reset",
-        "expires_at": datetime.utcnow() + timedelta(minutes=10)
-    })
-    send_otp_email(email, otp, purpose="reset")
-    return jsonify({"message": "Reset OTP sent"})
-
-
-@app.route("/verify-reset-otp", methods=["POST"])
-def verify_reset_otp():
-    data = request.get_json()
-    email = data.get("email")
-    otp = data.get("otp")
-
-    record = otp_collection.find_one({"email": email, "purpose": "reset"})
-    if not record:
-        return jsonify({"message": "OTP not found"}), 404
-    if datetime.utcnow() > record["expires_at"]:
-        otp_collection.delete_one({"_id": record["_id"]})
-        return jsonify({"message": "OTP expired"}), 400
-    if record["otp"] != otp:
-        return jsonify({"message": "Incorrect OTP"}), 400
-
-    return jsonify({"message": "OTP verified"})
-
-
-@app.route("/reset-password", methods=["POST"])
-def reset_password():
-    data = request.get_json()
-    email = data.get("email")
-    otp = data.get("otp")
-    new_password = data.get("newPassword")
-
-    record = otp_collection.find_one({"email": email, "purpose": "reset"})
-    if not record or record["otp"] != otp:
-        return jsonify({"message": "Invalid OTP"}), 400
-
-    users_collection.update_one(
-        {"email": email},
-        {"$set": {"password": generate_password_hash(new_password)}}
-    )
-
-    otp_collection.delete_one({"_id": record["_id"]})
-    return jsonify({"message": "Password reset successful"})
 
 @app.route("/verify-signup-otp", methods=["POST"])
 def verify_signup_otp():
@@ -206,7 +167,7 @@ def verify_signup_otp():
     )
     return jsonify({
         "message": "User created successfully",
-        "token": token,
+        "token":   token,
         "user": {
             "firstName":  user_data["firstName"],
             "lastName":   user_data["lastName"],
@@ -218,7 +179,7 @@ def verify_signup_otp():
 
 
 @app.route("/resend-otp", methods=["POST"])
-def resend_otp():
+def resend_otp_route():
     data    = request.get_json()
     email   = data.get("email")
     purpose = data.get("purpose", "verification")
@@ -250,7 +211,7 @@ def login():
     )
     return jsonify({
         "message": "Login successful",
-        "token": token,
+        "token":   token,
         "user": {
             "firstName":  user.get("firstName"),
             "lastName":   user.get("lastName"),
@@ -261,6 +222,69 @@ def login():
     })
 
 
+# =========================
+# 🔑 FORGOT PASSWORD
+# =========================
+@app.route("/forgot-password", methods=["POST"])
+def forgot_password():
+    data  = request.get_json()
+    email = data.get("email")
+
+    if not users_collection.find_one({"email": email}):
+        return jsonify({"message": "User not found"}), 404
+
+    otp = generate_otp()
+    otp_collection.delete_many({"email": email, "purpose": "reset"})
+    otp_collection.insert_one({
+        "email":      email,
+        "otp":        otp,
+        "purpose":    "reset",
+        "expires_at": datetime.utcnow() + timedelta(minutes=10)
+    })
+    send_otp_email(email, otp, purpose="reset")
+    return jsonify({"message": "Reset OTP sent"})
+
+
+@app.route("/verify-reset-otp", methods=["POST"])
+def verify_reset_otp():
+    data   = request.get_json()
+    email  = data.get("email")
+    otp    = data.get("otp")
+    record = otp_collection.find_one({"email": email, "purpose": "reset"})
+
+    if not record:
+        return jsonify({"message": "OTP not found"}), 404
+    if datetime.utcnow() > record["expires_at"]:
+        otp_collection.delete_one({"_id": record["_id"]})
+        return jsonify({"message": "OTP expired"}), 400
+    if record["otp"] != otp:
+        return jsonify({"message": "Incorrect OTP"}), 400
+
+    return jsonify({"message": "OTP verified"})
+
+
+@app.route("/reset-password", methods=["POST"])
+def reset_password():
+    data         = request.get_json()
+    email        = data.get("email")
+    otp          = data.get("otp")
+    new_password = data.get("newPassword")
+    record       = otp_collection.find_one({"email": email, "purpose": "reset"})
+
+    if not record or record["otp"] != otp:
+        return jsonify({"message": "Invalid OTP"}), 400
+
+    users_collection.update_one(
+        {"email": email},
+        {"$set": {"password": generate_password_hash(new_password)}}
+    )
+    otp_collection.delete_one({"_id": record["_id"]})
+    return jsonify({"message": "Password reset successful"})
+
+
+# =========================
+# 👤 PROFILE ROUTES
+# =========================
 @app.route("/profile", methods=["GET"])
 @token_required
 def get_profile(current_user):
@@ -288,10 +312,13 @@ def update_profile(current_user):
     return jsonify({"success": True, "message": "Profile updated"})
 
 
+# =========================
+# 💬 CHAT HISTORY
+# =========================
 @app.route("/chat/history", methods=["GET"])
 @token_required
 def get_chat_history(current_user):
-    record = chats_collection.find_one({"email": current_user["email"]})
+    record   = chats_collection.find_one({"email": current_user["email"]})
     messages = record["messages"] if record else []
     return jsonify({"messages": messages})
 
@@ -299,9 +326,9 @@ def get_chat_history(current_user):
 @app.route("/chat/save", methods=["POST"])
 @token_required
 def save_message(current_user):
-    data = request.get_json()
+    data    = request.get_json()
     message = {
-        "role":      data.get("role"),    
+        "role":      data.get("role"),
         "text":      data.get("text"),
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -324,7 +351,9 @@ def clear_chat_history(current_user):
     return jsonify({"success": True, "message": "Chat history cleared"})
 
 
-
+# =========================
+# 🤖 CHATBOT
+# =========================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data       = request.get_json()
