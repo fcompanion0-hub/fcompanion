@@ -39,7 +39,6 @@ def handle_options():
 SECRET_KEY = os.environ.get("SECRET_KEY")
 
 # ── Resend Email ──────────────────────────────────────
-# ── Resend Email ──────────────────────────────────────
 resend.api_key = os.environ.get("RESEND_API_KEY")
 RESEND_FROM = os.environ.get("RESEND_FROM")
 
@@ -162,7 +161,7 @@ def verify_signup_otp():
     otp_collection.delete_one({"_id": record["_id"]})
 
     token = jwt.encode(
-        {"email": email, "exp": datetime.utcnow() + timedelta(days=7)},
+        {"email": email, "exp": datetime.utcnow() + timedelta(days=1)},
         SECRET_KEY, algorithm="HS256"
     )
     return jsonify({
