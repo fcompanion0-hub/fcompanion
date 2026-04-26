@@ -21,6 +21,7 @@ CORS(app, origins=[
     "http://127.0.0.1:5501",
     "http://localhost:5501",
     "https://fcompanion.netlify.app",
+    "https://fcompanion-app.vercel.app",
     "https://fcompanion-frontend.vercel.app"
 ], supports_credentials=True)
 
@@ -394,7 +395,7 @@ def webhook():
         elif intent == "department_timetable":
             if department:
                 timetable = timetable_collection.find_one({"department": {"$regex": department, "$options": "i"}})
-                reply = f"Here's the URL link for the timetable: {timetable['timetable_link']}" if timetable else "Timetable not found."
+                reply = f"Here you go: {timetable['timetable_link']}" if timetable else "Timetable not found."
             else:
                 reply = "Please specify a department."
 
