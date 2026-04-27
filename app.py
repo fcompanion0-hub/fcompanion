@@ -349,7 +349,6 @@ def clear_chat_history(current_user):
     return jsonify({"success": True, "message": "Chat history cleared"})
 
 
-# CHATBOT response from DB
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data       = request.get_json()
@@ -382,14 +381,25 @@ def webhook():
         params = result.parameters
 
         # ── Safe parameter extraction ──
-        def get_param(params, key):
-            val = params.get(key)
+        def get_param(p, key):
+            if p is None:
+                return None
+            val = p.get(key)
             if isinstance(val, list):
                 return val[0]
             return val
 
         department = get_param(params, "departments")
         hod_name   = get_param(params, "names")
+
+        # ── Pull from context for follow-up intents ──
+        if not department and not hod_name:
+            for ctx in result.output_contexts:
+                if "hod_name-followup" in ctx.name:
+                    ctx_params = ctx.parameters
+                    department = get_param(ctx_params, "departments") or department
+                    hod_name   = get_param(ctx_params, "names") or hod_name
+                    break
 
         # ── Find HOD ──
         hod = None
@@ -417,7 +427,19 @@ def webhook():
             else:
                 reply = "I couldn't find the office for that HOD."
 
+        elif intent == "hod_office_followup":  # ← follow-up: "what's her office?"
+            if hod:
+                reply = f"{hod['name']}'s office is located at {hod['office']}."
+            else:
+                reply = "I couldn't find the office for that HOD."
+
         elif intent == "hod_contact":
+            if hod:
+                reply = f"You can contact {hod['name']} via {hod['email']}."
+            else:
+                reply = "I couldn't find the contact details for that HOD."
+
+        elif intent == "hod_contact_followup":  # ← follow-up: "what's her email?"
             if hod:
                 reply = f"You can contact {hod['name']} via {hod['email']}."
             else:
@@ -428,7 +450,6 @@ def webhook():
                 timetable = timetable_collection.find_one({
                     "department": {"$regex": department, "$options": "i"}
                 })
-
                 if timetable:
                     reply = f"Here is the timetable: {timetable['timetable_link']}"
                 else:
@@ -450,6 +471,6 @@ def webhook():
             "reply": "Something went wrong.",
             "error": str(e)
         }), 500
-
+    
 if __name__ == "__main__":
     app.run(debug=True)
