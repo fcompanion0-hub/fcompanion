@@ -35,9 +35,9 @@ def handle_options():
         return res, 200
 
 
-# =========================
-# 🔑 CONFIG
-# =========================
+
+# API Keys 
+
 SECRET_KEY = os.environ.get("SECRET_KEY")
 
 # ── Resend Email ──────────────────────────────────────
@@ -62,9 +62,9 @@ otp_collection       = db["otps"]
 chats_collection     = db["chats"]
 
 
-# =========================
-# 📧 EMAIL HELPER (Resend)
-# =========================
+
+# Email Service
+
 def send_otp_email(to_email, otp, purpose="verification"):
     subject = "FCOMPANION - Email Verification Code" if purpose == "verification" \
               else "FCOMPANION - Password Reset Code"
@@ -92,9 +92,9 @@ def generate_otp():
     return str(random.randint(100000, 999999))
 
 
-# =========================
-# 🔐 JWT HELPER
-# =========================
+
+# Json web token
+
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -112,9 +112,9 @@ def token_required(f):
     return decorated
 
 
-# =========================
-# 🔐 AUTH ROUTES
-# =========================
+
+# Authentication
+
 @app.route("/signup", methods=["POST"])
 def signup():
     data  = request.get_json()
@@ -223,9 +223,9 @@ def login():
     })
 
 
-# =========================
-# 🔑 FORGOT PASSWORD
-# =========================
+
+# Forgot Password
+
 @app.route("/forgot-password", methods=["POST"])
 def forgot_password():
     data  = request.get_json()
@@ -283,9 +283,8 @@ def reset_password():
     return jsonify({"message": "Password reset successful"})
 
 
-# =========================
-# 👤 PROFILE ROUTES
-# =========================
+
+# Get Profile Details
 @app.route("/profile", methods=["GET"])
 @token_required
 def get_profile(current_user):
@@ -313,9 +312,7 @@ def update_profile(current_user):
     return jsonify({"success": True, "message": "Profile updated"})
 
 
-# =========================
-# 💬 CHAT HISTORY
-# =========================
+#CHAT HISTORY
 @app.route("/chat/history", methods=["GET"])
 @token_required
 def get_chat_history(current_user):
@@ -352,9 +349,7 @@ def clear_chat_history(current_user):
     return jsonify({"success": True, "message": "Chat history cleared"})
 
 
-# =========================
-# 🤖 CHATBOT
-# =========================
+# CHATBOT response from DB
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data       = request.get_json()
@@ -369,42 +364,92 @@ def webhook():
     try:
         text_input  = dialogflow.TextInput(text=message, language_code="en-US")
         query_input = dialogflow.QueryInput(text=text_input)
-        response    = session_client.detect_intent(
+
+        response = session_client.detect_intent(
             request={"session": session, "query_input": query_input}
         )
 
-        result     = response.query_result
-        intent     = result.intent.display_name.lower()
-        params     = result.parameters
-        department = params.get("departments")
-        hod_name   = params.get("names")
-        reply      = result.fulfillment_text
+        result = response.query_result
 
+        # ── Let Dialogflow handle missing parameters ──
+        if not result.all_required_params_present:
+            return jsonify({
+                "reply": result.fulfillment_text,
+                "sessionId": session_id
+            })
+
+        intent = result.intent.display_name.lower()
+        params = result.parameters
+
+        # ── Safe parameter extraction ──
+        def get_param(params, key):
+            val = params.get(key)
+            if isinstance(val, list):
+                return val[0]
+            return val
+
+        department = get_param(params, "departments")
+        hod_name   = get_param(params, "names")
+
+        # ── Find HOD ──
         hod = None
-        if hod_name:
-            hod = hods_collection.find_one({"name": {"$regex": hod_name, "$options": "i"}})
-        if not hod and department:
-            hod = hods_collection.find_one({"department": {"$regex": department, "$options": "i"}})
 
+        if hod_name:
+            hod = hods_collection.find_one({
+                "name": {"$regex": hod_name, "$options": "i"}
+            })
+
+        if not hod and department:
+            hod = hods_collection.find_one({
+                "department": {"$regex": department, "$options": "i"}
+            })
+
+        # ── Intent Handling ──
         if intent == "hod_name":
-            reply = hod["name"] if hod else "HOD not found."
+            if hod:
+                reply = f"The HOD of {hod['department']} is {hod['name']}."
+            else:
+                reply = "I couldn't find the HOD for that department."
+
         elif intent == "hod_office":
-            reply = hod["office"] if hod else "Office not found."
+            if hod:
+                reply = f"{hod['name']}'s office is located at {hod['office']}."
+            else:
+                reply = "I couldn't find the office for that HOD."
+
         elif intent == "hod_contact":
-            reply = hod["email"] if hod else "Contact not found."
+            if hod:
+                reply = f"You can contact {hod['name']} via {hod['email']}."
+            else:
+                reply = "I couldn't find the contact details for that HOD."
+
         elif intent == "department_timetable":
             if department:
-                timetable = timetable_collection.find_one({"department": {"$regex": department, "$options": "i"}})
-                reply = f"Here you go: {timetable['timetable_link']}" if timetable else "Timetable not found."
-            else:
-                reply = "Please specify a department."
+                timetable = timetable_collection.find_one({
+                    "department": {"$regex": department, "$options": "i"}
+                })
 
-        return jsonify({"reply": reply, "sessionId": session_id})
+                if timetable:
+                    reply = f"Here is the timetable: {timetable['timetable_link']}"
+                else:
+                    reply = "Timetable not found for that department."
+            else:
+                reply = result.fulfillment_text
+
+        else:
+            reply = result.fulfillment_text or "I'm not sure how to help with that."
+
+        return jsonify({
+            "reply": reply,
+            "sessionId": session_id
+        })
 
     except Exception as e:
         print("ERROR:", str(e))
-        return jsonify({"reply": "Something went wrong.", "error": str(e)}), 500
-
+        return jsonify({
+            "reply": "Something went wrong.",
+            "error": str(e)
+        }), 500
 
 if __name__ == "__main__":
     app.run(debug=True)
