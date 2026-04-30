@@ -358,6 +358,26 @@ def webhook():
     if not message:
         return jsonify({"reply": "Please type a message.", "sessionId": session_id})
 
+    # ── Identify user from token ──────────────────────────
+    current_user = None
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if token:
+        try:
+            payload      = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            current_user = users_collection.find_one({"email": payload["email"]})
+        except Exception:
+            pass
+
+    user_department = current_user.get("department") if current_user else None
+    user_level      = current_user.get("level")      if current_user else None
+    user_name       = current_user.get("firstName")  if current_user else None
+
+    # ── Normalize department (fixes hyphen & case issues) ─
+    def normalize_department(dept):
+        if not dept:
+            return None
+        return dept.replace("-", " ").strip()
+
     session = session_client.session_path(PROJECT_ID, session_id)
 
     try:
@@ -389,15 +409,18 @@ def webhook():
                 return val[0]
             return val
 
-        department = get_param(params, "departments")
-        hod_name   = get_param(params, "names")
+        # ── Department: user profile first, Dialogflow param as fallback ──
+        # Both normalized to fix hyphen/case mismatches
+        dialogflow_department = normalize_department(get_param(params, "departments"))
+        department            = normalize_department(user_department) or dialogflow_department
+        hod_name              = get_param(params, "names")
 
         # ── Pull from context for follow-up intents ──
         if not department and not hod_name:
             for ctx in result.output_contexts:
                 if "hod_name-followup" in ctx.name:
                     ctx_params = ctx.parameters
-                    department = get_param(ctx_params, "departments") or department
+                    department = normalize_department(get_param(ctx_params, "departments")) or department
                     hod_name   = get_param(ctx_params, "names") or hod_name
                     break
 
@@ -418,16 +441,20 @@ def webhook():
         if intent == "hod_name":
             if hod:
                 reply = f"The HOD of {hod['department']} is {hod['name']}."
+            elif user_department:
+                reply = f"I couldn't find the HOD for {normalize_department(user_department)}."
             else:
                 reply = "I couldn't find the HOD for that department."
 
         elif intent == "hod_office":
             if hod:
                 reply = f"{hod['name']}'s office is located at {hod['office']}."
+            elif user_department:
+                reply = f"I couldn't find the office details for the HOD of {normalize_department(user_department)}."
             else:
                 reply = "I couldn't find the office for that HOD."
 
-        elif intent == "hod_office_followup":  # ← follow-up: "what's her office?"
+        elif intent == "hod_office_followup":
             if hod:
                 reply = f"{hod['name']}'s office is located at {hod['office']}."
             else:
@@ -436,24 +463,29 @@ def webhook():
         elif intent == "hod_contact":
             if hod:
                 reply = f"You can contact {hod['name']} via {hod['email']}."
+            elif user_department:
+                reply = f"I couldn't find the contact details for the HOD of {normalize_department(user_department)}."
             else:
                 reply = "I couldn't find the contact details for that HOD."
 
-        elif intent == "hod_contact_followup":  # ← follow-up: "what's her email?"
+        elif intent == "hod_contact_followup":
             if hod:
                 reply = f"You can contact {hod['name']} via {hod['email']}."
             else:
                 reply = "I couldn't find the contact details for that HOD."
 
         elif intent == "department_timetable":
-            if department:
+            # Use user's department first, fall back to Dialogflow param
+            timetable_dept = normalize_department(user_department) or dialogflow_department
+
+            if timetable_dept:
                 timetable = timetable_collection.find_one({
-                    "department": {"$regex": department, "$options": "i"}
+                    "department": {"$regex": timetable_dept, "$options": "i"}
                 })
                 if timetable:
-                    reply = f"Here is the timetable: {timetable['timetable_link']}"
+                    reply = f"Here is the timetable for {timetable['department']}: {timetable['timetable_link']}"
                 else:
-                    reply = "Timetable not found for that department."
+                    reply = f"I couldn't find a timetable for {timetable_dept}."
             else:
                 reply = result.fulfillment_text
 
@@ -469,8 +501,8 @@ def webhook():
         print("ERROR:", str(e))
         return jsonify({
             "reply": "Something went wrong.",
-            "error": str(e)
+            "sessionId": session_id
         }), 500
-    
+
 if __name__ == "__main__":
     app.run(debug=True)
