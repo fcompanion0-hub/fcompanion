@@ -114,11 +114,16 @@ def token_required(f):
 
 
 # Authentication
-
 @app.route("/signup", methods=["POST"])
 def signup():
-    data  = request.get_json()
+    data = request.get_json()
+
     email = data.get("email")
+
+    if not isinstance(email, str):
+        return jsonify({"message": "Invalid input."}), 400
+
+    email = email.strip().lower()
 
     if users_collection.find_one({"email": email}):
         return jsonify({"message": "User already exists"}), 400
@@ -186,6 +191,7 @@ def resend_otp_route():
     purpose = data.get("purpose", "verification")
     record  = otp_collection.find_one({"email": email, "purpose": purpose})
 
+
     if not record:
         return jsonify({"message": "No pending OTP found."}), 404
 
@@ -200,10 +206,18 @@ def resend_otp_route():
 
 @app.route("/login", methods=["POST"])
 def login():
-    data = request.get_json()
-    user = users_collection.find_one({"email": data.get("email")})
+    data     = request.get_json()
+    email    = data.get("email")
+    password = data.get("password")
 
-    if not user or not check_password_hash(user["password"], data.get("password")):
+    if not isinstance(email, str) or not isinstance(password, str):
+        return jsonify({"message": "Invalid input."}), 400
+    
+    email = email.strip().lower()
+
+    user = users_collection.find_one({"email": email})
+
+    if not user or not check_password_hash(user["password"], password):
         return jsonify({"message": "Invalid credentials"}), 401
 
     token = jwt.encode(
@@ -228,8 +242,14 @@ def login():
 
 @app.route("/forgot-password", methods=["POST"])
 def forgot_password():
-    data  = request.get_json()
+    data = request.get_json()
+
     email = data.get("email")
+
+    if not isinstance(email, str):
+        return jsonify({"message": "Invalid input."}), 400
+
+    email = email.strip().lower()
 
     if not users_collection.find_one({"email": email}):
         return jsonify({"message": "User not found"}), 404
@@ -372,11 +392,17 @@ def webhook():
     user_level      = current_user.get("level")      if current_user else None
     user_name       = current_user.get("firstName")  if current_user else None
 
-    # ── Normalize department (fixes hyphen & case issues) ─
+    # ── Normalize department ──────────────────────────────
     def normalize_department(dept):
         if not dept:
             return None
         return dept.replace("-", " ").strip()
+
+    # ── Normalize level ───────────────────────────────────
+    def normalize_level(level):
+        if not level:
+            return None
+        return str(level).replace("Level", "").strip()
 
     session = session_client.session_path(PROJECT_ID, session_id)
 
@@ -409,22 +435,39 @@ def webhook():
                 return val[0]
             return val
 
-        # ── Department: user profile first, Dialogflow param as fallback ──
-        # Both normalized to fix hyphen/case mismatches
+        # ── Extract from Dialogflow ───────────────────────
         dialogflow_department = normalize_department(get_param(params, "departments"))
-        department            = normalize_department(user_department) or dialogflow_department
-        hod_name              = get_param(params, "names")
+        dialogflow_level      = normalize_level(get_param(params, "level"))
 
-        # ── Pull from context for follow-up intents ──
-        if not department and not hod_name:
+        # ── Smart detection ───────────────────────────────
+        # Use what user mentioned, else fall back to profile
+        department = dialogflow_department or normalize_department(user_department)
+        level      = dialogflow_level      or normalize_level(user_level)
+
+        hod_name = get_param(params, "names")
+
+        # ── Pull from context for HOD follow-up intents ───
+        if not dialogflow_department and not hod_name:
             for ctx in result.output_contexts:
                 if "hod_name-followup" in ctx.name:
-                    ctx_params = ctx.parameters
-                    department = normalize_department(get_param(ctx_params, "departments")) or department
-                    hod_name   = get_param(ctx_params, "names") or hod_name
+                    ctx_params     = ctx.parameters
+                    ctx_department = normalize_department(get_param(ctx_params, "departments"))
+                    department     = ctx_department or department
+                    hod_name       = get_param(ctx_params, "names") or hod_name
                     break
 
-        # ── Find HOD ──
+        # ── Pull from context for advisor follow-up intents
+        if not dialogflow_department and not dialogflow_level:
+            for ctx in result.output_contexts:
+                if "advisor_name-followup" in ctx.name:
+                    ctx_params     = ctx.parameters
+                    ctx_department = normalize_department(get_param(ctx_params, "departments"))
+                    ctx_level      = normalize_level(get_param(ctx_params, "level"))
+                    department     = ctx_department or department
+                    level          = ctx_level      or level
+                    break
+
+        # ── Find HOD ──────────────────────────────────────
         hod = None
 
         if hod_name:
@@ -437,22 +480,35 @@ def webhook():
                 "department": {"$regex": department, "$options": "i"}
             })
 
-        # ── Intent Handling ──
+        # ── Find Advisor ──────────────────────────────────
+        advisor = None
+
+        if department and level:
+            advisor = db["advisors"].find_one({
+                "department": {"$regex": department, "$options": "i"},
+                "level":      level
+            })
+
+        # ── Intent Handling ───────────────────────────────
+
+        # ── HOD intents ───────────────────────────────────
         if intent == "hod_name":
             if hod:
-                reply = f"The HOD of {hod['department']} is {hod['name']}."
-            elif user_department:
-                reply = f"I couldn't find the HOD for {normalize_department(user_department)}."
+                if dialogflow_department:
+                    reply = f"The HOD of {hod['department']} is {hod['name']}."
+                else:
+                    reply = f"Your HOD is {hod['name']} of the {hod['department']} department."
             else:
-                reply = "I couldn't find the HOD for that department."
+                reply = f"I couldn't find the HOD for {department}." if department else "Please specify a department."
 
         elif intent == "hod_office":
             if hod:
-                reply = f"{hod['name']}'s office is located at {hod['office']}."
-            elif user_department:
-                reply = f"I couldn't find the office details for the HOD of {normalize_department(user_department)}."
+                if dialogflow_department:
+                    reply = f"The HOD of {hod['department']}, {hod['name']}, has their office at {hod['office']}."
+                else:
+                    reply = f"Your HOD's office is located at {hod['office']}."
             else:
-                reply = "I couldn't find the office for that HOD."
+                reply = f"I couldn't find the office for the HOD of {department}." if department else "Please specify a department."
 
         elif intent == "hod_office_followup":
             if hod:
@@ -462,11 +518,12 @@ def webhook():
 
         elif intent == "hod_contact":
             if hod:
-                reply = f"You can contact {hod['name']} via {hod['email']}."
-            elif user_department:
-                reply = f"I couldn't find the contact details for the HOD of {normalize_department(user_department)}."
+                if dialogflow_department:
+                    reply = f"You can contact the HOD of {hod['department']}, {hod['name']}, via {hod['email']}."
+                else:
+                    reply = f"You can contact your HOD, {hod['name']}, via {hod['email']}."
             else:
-                reply = "I couldn't find the contact details for that HOD."
+                reply = f"I couldn't find the contact for the HOD of {department}." if department else "Please specify a department."
 
         elif intent == "hod_contact_followup":
             if hod:
@@ -474,9 +531,67 @@ def webhook():
             else:
                 reply = "I couldn't find the contact details for that HOD."
 
+        # ── Advisor intents ───────────────────────────────
+        elif intent == "advisor_name":
+            if advisor:
+                if dialogflow_department or dialogflow_level:
+                    reply = f"The level advisor for {advisor['level']} Level {advisor['department']} is {advisor['name']}."
+                else:
+                    reply = f"Your level advisor is {advisor['name']}."
+            elif dialogflow_department and not dialogflow_level:
+                reply = "Please also specify the level to find that department's advisor."
+            elif dialogflow_level and not dialogflow_department:
+                reply = "Please also specify the department to find that level's advisor."
+            else:
+                reply = "I couldn't find your level advisor. Please ensure your profile has your department and level."
+
+        elif intent == "advisor_office":
+            if advisor:
+                if dialogflow_department or dialogflow_level:
+                    reply = f"The level advisor for {advisor['level']} Level {advisor['department']}, {advisor['name']}, has their office at {advisor['office']}."
+                else:
+                    reply = f"Your level advisor's office is located at {advisor['office']}."
+            elif dialogflow_department and not dialogflow_level:
+                reply = "Please also specify the level to find that advisor's office."
+            elif dialogflow_level and not dialogflow_department:
+                reply = "Please also specify the department to find that advisor's office."
+            else:
+                reply = "I couldn't find your level advisor's office details."
+
+        elif intent == "advisor_contact":
+            if advisor:
+                if dialogflow_department or dialogflow_level:
+                    reply = f"You can contact the {advisor['level']} Level {advisor['department']} advisor, {advisor['name']}, via {advisor['email']}."
+                else:
+                    reply = f"You can contact your level advisor, {advisor['name']}, via {advisor['email']}."
+            elif dialogflow_department and not dialogflow_level:
+                reply = "Please also specify the level to find that advisor's contact."
+            elif dialogflow_level and not dialogflow_department:
+                reply = "Please also specify the department to find that advisor's contact."
+            else:
+                reply = "I couldn't find your level advisor's contact details."
+
+        elif intent == "advisor_name_followup":
+            if advisor:
+                reply = f"You can contact {advisor['name']} via {advisor['email']}."
+            else:
+                reply = "I couldn't find the contact details for that advisor."
+
+        elif intent == "advisor_office_followup":
+            if advisor:
+                reply = f"{advisor['name']}'s office is located at {advisor['office']}."
+            else:
+                reply = "I couldn't find the office for that advisor."
+
+        elif intent == "advisor_contact_followup":
+            if advisor:
+                reply = f"{advisor['name']}'s office is located at {advisor['office']}."
+            else:
+                reply = "I couldn't find the office for that advisor."
+
+        # ── Timetable intent ──────────────────────────────
         elif intent == "department_timetable":
-            # Use user's department first, fall back to Dialogflow param
-            timetable_dept = normalize_department(user_department) or dialogflow_department
+            timetable_dept = dialogflow_department or normalize_department(user_department)
 
             if timetable_dept:
                 timetable = timetable_collection.find_one({
@@ -504,5 +619,5 @@ def webhook():
             "sessionId": session_id
         }), 500
 
-if __name__ == "__main__":
+if __name__ =="__main__":
     app.run(debug=True)
