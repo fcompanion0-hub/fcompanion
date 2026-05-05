@@ -60,6 +60,7 @@ timetable_collection = db["timetables"]
 users_collection     = db["users"]
 otp_collection       = db["otps"]
 chats_collection     = db["chats"]
+advisors_collection = db["level_advisor"]
 
 
 
@@ -484,7 +485,7 @@ def webhook():
         advisor = None
 
         if department and level:
-            advisor = db["advisors"].find_one({
+            advisor = advisors_collection.find_one({
                 "department": {"$regex": department, "$options": "i"},
                 "level":      level
             })
