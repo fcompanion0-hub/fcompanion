@@ -572,12 +572,6 @@ def webhook():
             else:
                 reply = "I couldn't find your level advisor's contact details."
 
-        elif intent == "advisor_name_followup":
-            if advisor:
-                reply = f"You can contact {advisor['name']} via {advisor['email']}."
-            else:
-                reply = "I couldn't find the contact details for that advisor."
-
         elif intent == "advisor_office_followup":
             if advisor:
                 reply = f"{advisor['name']}'s office is located at {advisor['office']}."
@@ -586,9 +580,9 @@ def webhook():
 
         elif intent == "advisor_contact_followup":
             if advisor:
-                reply = f"{advisor['name']}'s office is located at {advisor['office']}."
+                reply = f"You can contact {advisor['name']} via {advisor['email']}."
             else:
-                reply = "I couldn't find the office for that advisor."
+                reply = "I couldn't find the contact details for that advisor."
 
         # ── Timetable intent ──────────────────────────────
         elif intent == "department_timetable":
