@@ -470,27 +470,31 @@ def webhook():
                         level          = ctx_level      or level
                         break
 
-        # ── Find HOD ──────────────────────────────────────
+        # ── Find HOD ──────────────────────────────────────────
         hod = None
 
-        if hod_name:
-            hod = hods_collection.find_one({
-                "name": {"$regex": hod_name, "$options": "i"}
-            })
+        # Only look for HOD if intent is HOD related
+        if "advisor" not in intent:
+            if hod_name:
+                hod = hods_collection.find_one({
+                    "name": {"$regex": hod_name, "$options": "i"}
+                })
 
-        if not hod and department:
-            hod = hods_collection.find_one({
-                "department": {"$regex": department, "$options": "i"}
-            })
+            if not hod and department:
+                hod = hods_collection.find_one({
+                    "department": {"$regex": department, "$options": "i"}
+                })
 
-        # ── Find Advisor ──────────────────────────────────
+        # ── Find Advisor ──────────────────────────────────────
         advisor = None
 
-        if department and level:
-            advisor = advisors_collection.find_one({
-                "department": {"$regex": department, "$options": "i"},
-                "level":      level
-            })
+        # Only look for advisor if intent is advisor related
+        if "advisor" in intent:
+            if department and level:
+                advisor = advisors_collection.find_one({
+                    "department": {"$regex": department, "$options": "i"},
+                    "level":      level
+                })
 
         # ── Intent Handling ───────────────────────────────
 
