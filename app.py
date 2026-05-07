@@ -448,25 +448,27 @@ def webhook():
         hod_name = get_param(params, "names")
 
         # ── Pull from context for HOD follow-up intents ───
-        if not dialogflow_department and not hod_name:
-            for ctx in result.output_contexts:
-                if "hod_name-followup" in ctx.name:
-                    ctx_params     = ctx.parameters
-                    ctx_department = normalize_department(get_param(ctx_params, "departments"))
-                    department     = ctx_department or department
-                    hod_name       = get_param(ctx_params, "names") or hod_name
-                    break
+        if "followup" in intent and "advisor" not in intent:
+            if not dialogflow_department and not hod_name:
+                for ctx in result.output_contexts:
+                    if "hod_name-followup" in ctx.name:
+                        ctx_params     = ctx.parameters
+                        ctx_department = normalize_department(get_param(ctx_params, "departments"))
+                        department     = ctx_department or department
+                        hod_name       = get_param(ctx_params, "names") or hod_name
+                        break
 
         # ── Pull from context for advisor follow-up intents
-        if not dialogflow_department and not dialogflow_level:
-            for ctx in result.output_contexts:
-                if "advisor_name-followup" in ctx.name:
-                    ctx_params     = ctx.parameters
-                    ctx_department = normalize_department(get_param(ctx_params, "departments"))
-                    ctx_level      = normalize_level(get_param(ctx_params, "level"))
-                    department     = ctx_department or department
-                    level          = ctx_level      or level
-                    break
+        if "advisor" in intent:
+            if not dialogflow_department and not dialogflow_level:
+                for ctx in result.output_contexts:
+                    if "advisor_name-followup" in ctx.name:
+                        ctx_params     = ctx.parameters
+                        ctx_department = normalize_department(get_param(ctx_params, "departments"))
+                        ctx_level      = normalize_level(get_param(ctx_params, "level"))
+                        department     = ctx_department or department
+                        level          = ctx_level      or level
+                        break
 
         # ── Find HOD ──────────────────────────────────────
         hod = None
